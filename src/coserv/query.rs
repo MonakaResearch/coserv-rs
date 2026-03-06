@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use super::common::TimeStamp;
 use crate::error::CoservError;
 use corim_rs::triples::{ClassMap, GroupIdTypeChoice, InstanceIdTypeChoice, MeasurementMap};
 use serde::{
@@ -18,8 +17,6 @@ pub struct CoservQuery<'a> {
     pub artifact_type: ArtifactTypeChoice,
     /// environment selector map
     pub environment_selector: EnvironmentSelectorMap<'a>,
-    /// timestamp of query
-    pub timestamp: TimeStamp,
     /// result type selector
     pub result_type: ResultTypeChoice,
 }
@@ -29,7 +26,6 @@ pub struct CoservQuery<'a> {
 pub struct CoservQueryBuilder<'a> {
     pub artifact_type: Option<ArtifactTypeChoice>,
     pub environment_selector: Option<EnvironmentSelectorMap<'a>>,
-    pub timestamp: Option<TimeStamp>,
     pub result_type: Option<ResultTypeChoice>,
 }
 
@@ -48,13 +44,6 @@ impl<'a> CoservQueryBuilder<'a> {
         self
     }
 
-    // this function is used only by the deserializer.
-    // While building, this should be set to `now`
-    fn timestamp(mut self, value: TimeStamp) -> Self {
-        self.timestamp = Some(value);
-        self
-    }
-
     pub fn result_type(mut self, value: ResultTypeChoice) -> Self {
         self.result_type = Some(value);
         self
@@ -69,7 +58,6 @@ impl<'a> CoservQueryBuilder<'a> {
             environment_selector: self.environment_selector.ok_or(
                 CoservError::RequiredFieldNotSet("environment selector".into(), "query".into()),
             )?,
-            timestamp: self.timestamp.unwrap_or(TimeStamp::now()),
             result_type: self.result_type.ok_or(CoservError::RequiredFieldNotSet(
                 "result type".into(),
                 "query".into(),
@@ -83,11 +71,10 @@ impl Serialize for CoservQuery<'_> {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(Some(4))?;
+        let mut map = serializer.serialize_map(Some(3))?;
         map.serialize_entry(&0, &self.artifact_type)?;
         map.serialize_entry(&1, &self.environment_selector)?;
-        map.serialize_entry(&2, &self.timestamp)?;
-        map.serialize_entry(&3, &self.result_type)?;
+        map.serialize_entry(&2, &self.result_type)?;
         map.end()
     }
 }
@@ -124,9 +111,6 @@ impl<'de> Deserialize<'de> for CoservQuery<'_> {
                             );
                         }
                         Some(2) => {
-                            builder = builder.timestamp(access.next_value::<TimeStamp>()?);
-                        }
-                        Some(3) => {
                             builder = builder.result_type(access.next_value::<ResultTypeChoice>()?);
                         }
                         Some(n) => Err(de::Error::unknown_field(
@@ -135,12 +119,6 @@ impl<'de> Deserialize<'de> for CoservQuery<'_> {
                         ))?,
                         None => break,
                     };
-                }
-                // decoded query without timestamp is invalid
-                if builder.timestamp.is_none() {
-                    return Err(M::Error::custom(
-                        "Required field timestamp not present in query",
-                    ));
                 }
                 builder.build().map_err(M::Error::custom)
             }
@@ -507,7 +485,6 @@ impl<'de> Deserialize<'de> for ResultTypeChoice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::DateTime;
     use corim_rs::triples::MeasurementValuesMap;
     use corim_rs::{Bytes, ClassIdTypeChoice};
     #[test]
@@ -999,13 +976,10 @@ mod tests {
                         }]),
                     },
                 ]),
-                timestamp: DateTime::parse_from_rfc3339("2020-09-04T13:04:39Z")
-                    .unwrap()
-                    .into(),
                 result_type: ResultTypeChoice::CollectedArtifacts,
             },
             vec![
-                0xa4, // map(4)
+                0xa3, // map(3)
                 0x00, // unsigned(0)
                 0x02, // unsigned(2)
                 0x01, // unsigned(1)
@@ -1028,10 +1002,6 @@ mod tests {
                 0x63, // text(3)
                 0x66, 0x6f, 0x6f, // "foo"
                 0x02, // unsigned(2)
-                0xc0, 0x74, // text(20)
-                0x32, 0x30, 0x32, 0x30, 0x2d, 0x30, 0x39, 0x2d, 0x30, 0x34, 0x54, 0x31, 0x33, 0x3a,
-                0x30, 0x34, 0x3a, 0x33, 0x39, 0x5a, // "2020-09-04T13:04:39Z"
-                0x03, // unsigned(3)
                 0x00, // unsigned(0)
             ],
         )];
@@ -1050,35 +1020,6 @@ mod tests {
 
         let cbor_invalid_key: Vec<u8> = vec![0xa1, 0x04, 0x80];
         let err: Result<CoservQuery, _> = ciborium::from_reader(cbor_invalid_key.as_slice());
-        assert!(err.is_err());
-
-        let cbor_missing_timestamp: Vec<u8> = vec![
-            0xa3, // map(3)
-            0x00, // unsigned(0)
-            0x02, // unsigned(2)
-            0x01, // unsigned(1)
-            0xa1, // map(1)
-            0x02, // unsigned(2)
-            0x82, // array(2)
-            0x81, // array(1)
-            0xd9, 0x02, 0x30, // tag(560)
-            0x44, // bytes(4)
-            0x01, 0x02, 0x03, 0x04, // "\u0001\u0002\u0003\u0004"
-            0x82, // array(2)
-            0xd9, 0x02, 0x30, // tag(560)
-            0x44, // bytes(4)
-            0x02, 0x03, 0x04, 0x05, // "\u0002\u0003\u0004\u0005"
-            0x81, // array(1)
-            0xa1, // map(1)
-            0x01, // unsigned(1)
-            0xa1, // map(1)
-            0x0b, // unsigned(11)
-            0x63, // text(3)
-            0x66, 0x6f, 0x6f, // "foo"
-            0x03, // unsigned(3)
-            0x00, // unsigned(0)
-        ];
-        let err: Result<CoservQuery, _> = ciborium::from_reader(cbor_missing_timestamp.as_slice());
         assert!(err.is_err());
     }
 }
